@@ -1,0 +1,58 @@
+name: CI (alternative)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Debug - list repo
+        run: |
+          echo "=== Root listing ==="
+          ls -la
+          echo
+          echo "=== Find package.json files (depth 4) ==="
+          find . -maxdepth 4 -type f -name 'package.json' -not -path './node_modules/*' -print || true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Run npm only where package.json exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          # prefer workspace bootstrap at root if present
+          if [ -f package.json ] && node -e "try { const p=require('./package.json'); console.log(Boolean(p.workspaces)); } catch(e) { console.log('false') }" | grep -q "true"; then
+            echo "Found workspaces in root package.json -> running npm ci at root"
+            if [ -f package-lock.json ]; then npm ci; else npm install; fi
+            exit 0
+          fi
+
+          found=false
+          while IFS= read -r pkg; do
+            found=true
+            dir=$(dirname "$pkg")
+            echo "-- Project: $dir"
+            pushd "$dir" >/dev/null
+            if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
+            if node -e "try{const s=require('./package.json').scripts||{}; process.exit(Boolean(s.build)?0:1)}catch(e){process.exit(1)}"; then
+              echo "Running npm run build in $dir"; npm run build
+            else
+              echo "No build script in $dir - skipping build"
+            fi
+            popd >/dev/null
+          done < <(find . -maxdepth 4 -type f -name 'package.json' -not -path './node_modules/*' -print)
+
+          if [ "$found" = false ]; then
+            echo "No package.json files found - skipping npm steps"
+          fi
